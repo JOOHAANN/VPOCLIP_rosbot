@@ -1,0 +1,123 @@
+# VPOCLIP_plus "final_aug" 50/5 model, wired for local realtime inference.
+#
+# Same network as config_final_objconcat.yaml (attention_pool reducer +
+# temporal_concat object fusion, RTMPose COCO-17 channel split). The difference
+# is the text side: the prototypes were trained as the mean of 8 phrasings per
+# class, so realtime has to rebuild them the same way.
+#
+# Checkpoint: work_dir/clipgcn_contrastive_50_5/run_20260616_210139/swa_model.pth
+
+runtime:
+  device: cuda:0
+  seed: 20260616
+  amp: true
+  no_show: true
+
+data:
+  # Realtime only reads metadata.json here for the seen/unseen split; the
+  # 50/5 class partition is identical to the cross-subject split the model was
+  # trained on (unseen = 9, 10, 11, 17, 49).
+  train:
+    data_dir: ./data/contrastive_zsl_splits/50_5
+    prefix: trimodal_train
+    pose_suffix: _coco17
+    mmap: true
+
+  val:
+    data_dir: ./data/contrastive_zsl_splits/50_5
+    prefix: trimodal_val
+    pose_suffix: _coco17
+    mmap: true
+
+  augment:
+    enabled: true
+    noise_std: 0.02
+    time_jitter: 0.3
+    modality_dropout: 0.2
+
+  text:
+    xlsx: ./ntu55_global_descriptions.xlsx
+    id_column: ID
+    text_column: global_description
+    label_offset: 1
+    prompt_template: "{global_description}"
+    # Prototype ensembling: one sentence puts a class at an isolated point in
+    # CLIP space, which is brittle for classes never trained on. Eight phrasings
+    # per class are encoded and their unit vectors averaged.
+    prompt_templates:
+      - "{global_description}"
+      - "{action_description}"
+      - "a person {action_description}"
+      - "a video of a person {action_description}"
+      - "an older adult {action_description}"
+      - "someone at home {action_description}"
+      - "a daily activity: {action_description}"
+      - "footage of {action_description} indoors"
+    batch_size: 128
+    cache_output: ./work_dir/clip_text_action_embeddings.pt
+
+  dataloader:
+    batch_size: 128
+    num_workers: 16
+    train_shuffle: true
+    val_shuffle: false
+    class_balanced_sampling: true
+    pin_memory: true
+    drop_last: true
+
+model:
+  text_encoder:
+    name: ViT-B/32
+    download_root: ./local_models/clip
+  fusion:
+    # reducer: attention_pool  spatial GAP + temporal attention  (~1.5M)
+    #          gap             spatial GAP + temporal GAP        (~0.7M)
+    #          flatten_fc      original 25200->512 projection    (~13M)
+    reducer: attention_pool
+    dropout: 0.4
+    attention_dim: 256
+    attention_heads: 4
+    attention_layers: 1
+    # object_fusion: cross_attention  objects are key/value, frames are query
+    #                broadcast        object map repeated on every frame
+    #                temporal_concat  original: object map as a 14th frame
+    object_fusion: temporal_concat
+    object_attention_dim: 128
+    object_attention_heads: 4
+    object_dropout: 0.1
+    # RTMPose COCO-17: 33 video channels + 17 joints = 50
+    video_channels: 33
+    num_joints: 17
+
+train:
+  epochs: 300
+  swa_start: 200
+  val_interval: 1
+  grad_clip_norm: 1.0
+  scheduler: cosine
+  min_lr: 1.0e-6
+  model_selection: val_accuracy
+  optimizer:
+    name: AdamW
+    lr: 0.0001
+    weight_decay: 0.0001
+
+outputs:
+  work_dir: ./work_dir/clipgcn_contrastive_50_5
+  auto_run_dir: true
+  run_name: null
+  best_model: ./work_dir/clipgcn_contrastive_50_5/run_20260616_210139/swa_model.pth
+  last_model: ./work_dir/clipgcn_contrastive_50_5/last_model.pth
+  history: ./work_dir/clipgcn_contrastive_50_5/history.json
+  train_curve: ./work_dir/clipgcn_contrastive_50_5/train_curve.png
+  test_results: ./work_dir/clipgcn_contrastive_50_5/unseen_test_results.json
+
+inference:
+  # This is the only realtime class-display policy.
+  decision_gate:
+    enabled: true
+    person_slot: 0
+    temperature: 0.05
+    # YOLO must see a person. With a person, H below this value displays Top-1;
+    # no person or H >= this value displays ANALYSING.
+    entropy_threshold: 0.30
