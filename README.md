@@ -1,39 +1,43 @@
-# CLIPGCN ROSbot 运行指南
+# CLIPGCN on ROSbot
 
-本项目在 ROS 2 Jazzy 下读取 ROSbot 摄像头，运行 CLIPGCN 动作识别（HAR），
-并把同一次 YOLO 检测得到的人体目标发送给人物跟随控制器。Nav2 和人物跟随
-共用速度仲裁器，控制优先级为：
-
-```text
-急停 > Nav2 导航 > 人物跟随 > 停车
-```
-
-数据流：
+This project runs CLIPGCN human action recognition (HAR) on ROSbot camera
+frames under ROS 2 Jazzy. The same YOLO detection used by HAR can publish the
+selected person to the person-follow controller. A velocity arbiter coordinates
+Nav2 and person following with this fixed priority:
 
 ```text
-ROSbot 摄像头 -> CLIPGCN / YOLO -> HAR 结果与 PersonDetection
-                                         |
-                                         v
-                                 person_follow_controller
-                                         |
-                                         v
-Nav2 -> cmd_vel_nav ---------> cmd_vel_arbiter -> ROSbot cmd_vel
-人物跟随 -> cmd_vel_follow ---/
+Emergency stop > Nav2 navigation > Person following > Stop
 ```
 
-下面的命令按当前工作站目录和容器配置编写：
+The runtime data flow is:
 
 ```text
-/home/youhan/HAR/CLIPGCN             HAR 源码、配置和本地模型
-/home/youhan/HAR/VPOCLIP_rosbot      Docker Compose 配置
-/home/youhan/HAR/person_follow_ws    Follow ROS 2 工作区
-/home/youhan/HAR/X3D                 X3D 代码
-/home/youhan/HAR/CTR-GCN_17          CTR-GCN 代码
-/home/youhan/HAR/yolov5              YOLOv5 代码
+ROSbot camera -> CLIPGCN / YOLO -> HAR result and PersonDetection
+                                          |
+                                          v
+                                  person_follow_controller
+                                          |
+                                          v
+Nav2 -> cmd_vel_nav -----------> cmd_vel_arbiter -> ROSbot cmd_vel
+Person follow -> cmd_vel_follow /
 ```
 
-模型、数据集和训练输出已被 `.gitignore` 排除，不会上传到 GitHub。运行前必须
-在本机恢复以下资源：
+## Repository and workspace layout
+
+The commands in this guide use the current workstation layout:
+
+```text
+/home/youhan/HAR/CLIPGCN             HAR source code and configuration
+/home/youhan/HAR/VPOCLIP_rosbot      Docker Compose configuration
+/home/youhan/HAR/person_follow_ws    Person-follow ROS 2 workspace
+/home/youhan/HAR/X3D                 X3D source code
+/home/youhan/HAR/CTR-GCN_17          CTR-GCN source code
+/home/youhan/HAR/yolov5              YOLOv5 source code
+```
+
+Model files, datasets, and training outputs are excluded by `.gitignore` and
+are not stored on GitHub. Restore at least these local assets before running
+the full HAR pipeline:
 
 ```text
 data/contrastive_zsl_splits/50_5/
@@ -41,37 +45,38 @@ work_dir/clipgcn_contrastive_50_5/run_20260616_210139/swa_model.pth
 local_models/
 ```
 
-## 1. 配置和检查 Wi-Fi
+## 1. Configure and verify Wi-Fi
 
-当前 DDS 配置使用无线接口 `wlp2s0`，ROS Domain ID 为 `10`，已配置的 peer
-地址为 `10.186.13.100`、`10.186.13.101` 和 `10.186.13.30`。
+The current DDS configuration uses wireless interface `wlp2s0`, ROS Domain ID
+`10`, and peer addresses `10.186.13.100`, `10.186.13.101`, and
+`10.186.13.30`.
 
-查看无线接口和可用网络：
+List network devices and available Wi-Fi networks:
 
 ```bash
 nmcli device status
 nmcli device wifi list ifname wlp2s0
 ```
 
-连接已经保存过的 ROSbot Wi-Fi：
+Connect using an existing NetworkManager profile:
 
 ```bash
 nmcli connection show
-nmcli connection up id "你的ROSbot Wi-Fi连接名"
+nmcli connection up id "YOUR_ROSBOT_WIFI_CONNECTION"
 ```
 
-首次连接：
+To connect for the first time:
 
 ```bash
-ROSBOT_WIFI_SSID="你的Wi-Fi名称"
-ROSBOT_WIFI_PASSWORD="你的Wi-Fi密码"
+ROSBOT_WIFI_SSID="YOUR_WIFI_SSID"
+ROSBOT_WIFI_PASSWORD="YOUR_WIFI_PASSWORD"
 nmcli device wifi connect "$ROSBOT_WIFI_SSID" \
   password "$ROSBOT_WIFI_PASSWORD" \
   ifname wlp2s0
 unset ROSBOT_WIFI_PASSWORD
 ```
 
-检查本机地址和机器人连通性：
+Check the workstation address and robot connectivity:
 
 ```bash
 ip -4 -br address show wlp2s0
@@ -79,16 +84,19 @@ ping -c 1 10.186.13.100
 ping -c 1 10.186.13.101
 ```
 
-如果无线接口不叫 `wlp2s0`，先在
-`/home/youhan/HAR/VPOCLIP_rosbot/compose.yaml` 中修改 CycloneDDS 的
-`NetworkInterface name`，并同步修改 `jazzy-rosbot` 导航容器使用的 DDS
-接口。修改 Compose 后需要重新创建推理容器。
+If the wireless interface is not named `wlp2s0`, update the CycloneDDS
+`NetworkInterface name` in
+`/home/youhan/HAR/VPOCLIP_rosbot/compose.yaml`. Also update the DDS interface
+used by the `jazzy-rosbot` navigation container. Recreate the inference
+container after changing its Compose configuration.
 
-Wi-Fi 密码只应在终端或本机 NetworkManager 中配置，不要写进本仓库。
+Keep Wi-Fi credentials in NetworkManager or your local shell. Never commit
+them to this repository.
 
-## 2. 启动容器
+## 2. Start the containers
 
-允许容器显示 OpenCV/RViz 窗口，然后启动两个已有容器：
+Allow the containers to display OpenCV and RViz windows, then start the two
+existing containers:
 
 ```bash
 xhost +si:localuser:root
@@ -96,61 +104,65 @@ docker start jazzy-rosbot jazzy-rosbot-clipgcn
 docker ps --filter name=jazzy-rosbot
 ```
 
-首次创建推理容器，或修改了 Dockerfile、requirements/Compose 配置时：
+Use the following command only for the first creation, or after changing the
+Dockerfile, requirements, or Compose configuration:
 
 ```bash
 cd /home/youhan/HAR/VPOCLIP_rosbot
 docker compose up -d --build
 ```
 
-平时不要使用 `docker compose down`，因为它会删除推理容器。正常停止使用：
+Do not use `docker compose down` for a routine stop because it deletes the
+inference container. Stop the existing containers with:
 
 ```bash
 docker stop jazzy-rosbot-clipgcn jazzy-rosbot
 ```
 
-## 3. 选择 rosbot_1 或 rosbot_2
+## 3. Select rosbot_1 or rosbot_2
 
-Follow 和 HAR 的每一个新终端都必须执行一次机器人选择脚本。选择机器人 1：
+Every new Follow or HAR terminal must source the robot selector. Select robot
+1 with:
 
 ```bash
 source /workspace/person_follow_ws/select_rosbot.sh rosbot_1
 ```
 
-选择机器人 2：
+Select robot 2 with:
 
 ```bash
 source /workspace/person_follow_ws/select_rosbot.sh rosbot_2
 ```
 
-脚本会设置：
+The selector exports:
 
 ```text
-ROSBOT_TARGET          rosbot_1 或 rosbot_2
-ROSBOT_NS              /rosbot_1 或 /rosbot_2
-ROSBOT_IMAGE_TOPIC     对应机器人的压缩图像话题
-ROSBOT_PERSON_TOPIC    对应机器人的 PersonDetection 话题
+ROSBOT_TARGET          rosbot_1 or rosbot_2
+ROSBOT_NS              /rosbot_1 or /rosbot_2
+ROSBOT_IMAGE_TOPIC     Compressed camera topic for the selected robot
+ROSBOT_PERSON_TOPIC    PersonDetection topic for the selected robot
 ```
 
-检查所选机器人的摄像头：
+Verify the selected camera:
 
 ```bash
 ros2 topic info "$ROSBOT_IMAGE_TOPIC"
 ros2 topic hz "$ROSBOT_IMAGE_TOPIC"
 ```
 
-不要在进程运行中直接切换变量。切换机器人时，先按本文“切换机器人”一节停止
-旧机器人的 HAR、Follow 和 Nav2，再在各终端重新执行选择脚本。
+Do not change the variables while processes are running. Stop HAR, Follow, and
+Nav2 for the old robot before selecting the new robot, as described in
+"Switch robots" below.
 
-## 4. 首次构建 Follow 工作区
+## 4. Build the Follow workspace
 
-进入推理容器：
+Enter the inference container:
 
 ```bash
 docker exec -it jazzy-rosbot-clipgcn bash
 ```
 
-构建：
+Build the ROS 2 workspace:
 
 ```bash
 source /opt/ros/jazzy/setup.bash
@@ -159,16 +171,17 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
-只有代码或 ROS 包发生变化时才需要重新构建。
+Rebuild only after changing the Follow source code or ROS packages.
 
-## 5. 启动顺序
+## 5. Start Nav2, Follow, and HAR
 
-建议分别打开三个终端：Nav、Follow、HAR。第一次真机运行时应保持机器人周围
-无障碍，并准备好急停命令。
+Use separate terminals for Nav2, Follow, and HAR. On the first physical-robot
+test, keep the area around the robot clear and have the emergency-stop command
+ready.
 
-### 终端 A：Nav2
+### Terminal A: Nav2
 
-进入导航容器并设置控制脚本路径：
+Enter the navigation container and open its offboard control directory:
 
 ```bash
 docker exec -it jazzy-rosbot bash
@@ -177,13 +190,13 @@ cd /root/rosbot2-jazzy-image/host/offboard
 ROSBOT_TARGET=rosbot_1
 ```
 
-如需机器人 2，把最后一行改为：
+For robot 2, use:
 
 ```bash
 ROSBOT_TARGET=rosbot_2
 ```
 
-查看状态和地图：
+Inspect the current runtime and available maps:
 
 ```bash
 ./rosbot-offboard status
@@ -191,7 +204,7 @@ ROSBOT_TARGET=rosbot_2
 ./rosbot-offboard maps
 ```
 
-使用已有的 `lab` 地图：
+Localize with the existing `lab` map and start Nav2:
 
 ```bash
 ./rosbot-offboard localize "$ROSBOT_TARGET" lab
@@ -199,26 +212,26 @@ ROSBOT_TARGET=rosbot_2
 ./rosbot-offboard rviz "$ROSBOT_TARGET"
 ```
 
-如果要实时建图并导航：
+To build a live map while navigating instead:
 
 ```bash
 ./rosbot-offboard nav-slam "$ROSBOT_TARGET"
 ./rosbot-offboard rviz "$ROSBOT_TARGET"
 ```
 
-发送导航目标，单位为米和弧度：
+Send a navigation goal. Position values are in meters and yaw is in radians:
 
 ```bash
 ./rosbot-offboard goal "$ROSBOT_TARGET" 1.0 0.5 0.0 --yes
 ```
 
-停止该机器人的 Nav2/SLAM：
+Stop Nav2 and SLAM for the selected robot:
 
 ```bash
 ./rosbot-offboard stop "$ROSBOT_TARGET"
 ```
 
-### 终端 B：Follow 控制器和速度仲裁器
+### Terminal B: Follow controller and velocity arbiter
 
 ```bash
 docker exec -it jazzy-rosbot-clipgcn bash
@@ -229,10 +242,11 @@ ros2 launch person_follow_demo person_follow_demo.launch.py \
   namespace:="$ROSBOT_TARGET"
 ```
 
-使用机器人 2 时，把选择脚本的参数改成 `rosbot_2`。Follow 启动时默认关闭，
-必须在 HAR 已经发布人体检测后手动开启。
+Change the selector argument to `rosbot_2` when controlling robot 2. Person
+following starts disabled and must be enabled manually after HAR begins
+publishing person detections.
 
-### 终端 C：HAR
+### Terminal C: HAR
 
 ```bash
 docker exec -it jazzy-rosbot-clipgcn bash
@@ -267,16 +281,18 @@ python ros_realtime.py \
   --enable-person-follow-output
 ```
 
-使用机器人 2 时，把选择脚本的参数改成 `rosbot_2`。`--robot-namespace`
-会自动选择对应的摄像头和 PersonDetection 话题。无显示器运行时在命令末尾加：
+Change the selector argument to `rosbot_2` when controlling robot 2.
+`--robot-namespace` automatically selects the matching camera and
+PersonDetection topics. Add the following option for headless operation:
 
 ```text
 --headless
 ```
 
-### 终端 D：开启、关闭和急停 Follow
+### Terminal D: Enable, disable, or emergency-stop Follow
 
-进入推理容器并选择同一个机器人：
+Enter the inference container and select the same robot used by Follow and
+HAR:
 
 ```bash
 docker exec -it jazzy-rosbot-clipgcn bash
@@ -285,7 +301,7 @@ source /workspace/person_follow_ws/install/setup.bash
 source /workspace/person_follow_ws/select_rosbot.sh rosbot_1
 ```
 
-开启人物跟随：
+Enable person following:
 
 ```bash
 ros2 service call \
@@ -293,7 +309,7 @@ ros2 service call \
   std_srvs/srv/SetBool "{data: true}"
 ```
 
-关闭人物跟随：
+Disable person following:
 
 ```bash
 ros2 service call \
@@ -301,7 +317,7 @@ ros2 service call \
   std_srvs/srv/SetBool "{data: false}"
 ```
 
-急停：
+Activate the emergency stop:
 
 ```bash
 ros2 topic pub --once \
@@ -309,7 +325,7 @@ ros2 topic pub --once \
   std_msgs/msg/Bool "{data: true}"
 ```
 
-解除急停：
+Release the emergency stop:
 
 ```bash
 ros2 topic pub --once \
@@ -317,26 +333,28 @@ ros2 topic pub --once \
   std_msgs/msg/Bool "{data: false}"
 ```
 
-Nav2 执行导航任务时，仲裁器会自动暂停 Follow 并优先转发
-`cmd_vel_nav`；导航结束后再恢复 Follow。
+While Nav2 has an active navigation task, the arbiter pauses Follow and forwards
+`cmd_vel_nav`. Follow resumes after navigation finishes.
 
-## 6. 切换机器人
+## 6. Switch robots
 
-以下示例从 `rosbot_1` 切换到 `rosbot_2`。
+The following example switches from `rosbot_1` to `rosbot_2`.
 
-1. 在终端 D 关闭 `rosbot_1` 的人物跟随；需要时先发送急停。
-2. 在 HAR 终端按 `Ctrl+C`。
-3. 在 Follow 终端按 `Ctrl+C`。
-4. 在 Nav 容器中停止旧机器人的进程：
+1. Disable person following for `rosbot_1`. Activate the emergency stop first
+   if necessary.
+2. Press `Ctrl+C` in the HAR terminal.
+3. Press `Ctrl+C` in the Follow terminal.
+4. Stop the old robot's navigation processes in the Nav2 container:
 
 ```bash
 cd /root/rosbot2-jazzy-image/host/offboard
 ./rosbot-offboard stop rosbot_1
 ```
 
-5. 如两个机器人使用不同 Wi-Fi，先在宿主机切换连接并重新检查
-   `wlp2s0` 地址和 ping。
-6. 在 Nav 终端设置新目标并重新启动 localization/Nav2：
+5. If the robots use different Wi-Fi networks, switch the host connection and
+   check the `wlp2s0` address and ping again.
+6. Select the new target in the Nav2 terminal and restart localization and
+   navigation:
 
 ```bash
 ROSBOT_TARGET=rosbot_2
@@ -345,17 +363,17 @@ ROSBOT_TARGET=rosbot_2
 ./rosbot-offboard rviz "$ROSBOT_TARGET"
 ```
 
-7. 在 Follow、HAR、控制终端分别重新执行：
+7. Run the selector in each Follow, HAR, and control terminal:
 
 ```bash
 source /workspace/person_follow_ws/select_rosbot.sh rosbot_2
 ```
 
-然后按照启动顺序重新运行 Follow、HAR，最后再开启人物跟随。
+Restart Follow and HAR in that order, then enable person following.
 
-## 7. 检查与故障排除
+## 7. Verification and troubleshooting
 
-检查 DDS 和摄像头：
+Check DDS and the camera connection:
 
 ```bash
 echo "$ROS_DOMAIN_ID"
@@ -365,7 +383,7 @@ ros2 topic list | grep -E 'rosbot_[12]'
 ros2 topic info -v "$ROSBOT_IMAGE_TOPIC"
 ```
 
-检查 Follow 数据：
+Inspect Follow data:
 
 ```bash
 ros2 topic echo "$ROSBOT_NS/follow/person_detection"
@@ -373,37 +391,41 @@ ros2 topic echo "$ROSBOT_NS/follow/controller_state"
 ros2 topic echo "$ROSBOT_NS/follow/arbiter_state"
 ```
 
-检查速度发布者：
+Inspect velocity publishers:
 
 ```bash
 ros2 topic info -v "$ROSBOT_NS/cmd_vel"
 ros2 topic info -v "$ROSBOT_NS/cmd_vel_nav"
 ```
 
-最终 `cmd_vel` 应只有 `cmd_vel_arbiter` 一个 publisher；`cmd_vel_nav` 应由
-Nav2 `controller_server` 发布。若有其他节点直接发布 `cmd_vel`，先停止它，
-否则可能绕过仲裁和急停。
+The final `cmd_vel` topic should have only `cmd_vel_arbiter` as its publisher.
+`cmd_vel_nav` should be published by the Nav2 `controller_server`. Stop any
+other node that publishes directly to the final `cmd_vel`, because it may
+bypass arbitration and the emergency stop.
 
-常见问题：
+Common issues:
 
-- `No image received`：检查 Wi-Fi、`wlp2s0` 地址、DDS peer、Domain ID、
-  `ROSBOT_TARGET` 和摄像头话题。
-- 找不到 checkpoint/data：这些大文件不会进入 Git，需从本地备份恢复。
-- Follow 不动：确认 HAR 使用了 `--enable-person-follow-output`，再检查
-  `person_detection` 和 Follow enable 服务。
-- Follow 被暂停：检查 `navigation_active`；Nav2 有活动任务时这是正常行为。
-- OpenCV/RViz 无窗口：在宿主机重新运行 `xhost +si:localuser:root`，并检查
-  `DISPLAY`。
+- `No image received`: check Wi-Fi, the `wlp2s0` address, DDS peers, Domain ID,
+  `ROSBOT_TARGET`, and the camera topic.
+- Missing checkpoint or data: these large files are not stored in Git and must
+  be restored from local storage.
+- Follow does not move: confirm that HAR uses
+  `--enable-person-follow-output`, then inspect `person_detection` and the
+  Follow enable service.
+- Follow is paused: inspect `navigation_active`. This is expected while Nav2
+  has an active task.
+- No OpenCV or RViz window: rerun `xhost +si:localuser:root` on the host and
+  check `DISPLAY`.
 
-## 8. 停止系统
+## 8. Stop the system
 
-推荐顺序：
+Use this shutdown order:
 
-1. 关闭 Follow 或发送急停。
-2. 在 HAR 和 Follow 终端按 `Ctrl+C`。
-3. 在 Nav 容器运行 `./rosbot-offboard stop "$ROSBOT_TARGET"`。
-4. 退出各容器 shell。
-5. 需要时停止容器：
+1. Disable Follow or activate the emergency stop.
+2. Press `Ctrl+C` in the HAR and Follow terminals.
+3. Run `./rosbot-offboard stop "$ROSBOT_TARGET"` in the Nav2 container.
+4. Exit the container shells.
+5. Stop the containers if required:
 
 ```bash
 docker stop jazzy-rosbot-clipgcn jazzy-rosbot
